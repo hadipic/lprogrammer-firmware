@@ -1,703 +1,355 @@
-# 📊 کد کامل UART با دو حالت Bootloader و Terminal
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         فرانت‌اند (Terminal Page)                          │
-│                                                                             │
-│  1. کاربر روی دکمه 🔌 Connect کلیک می‌کند                                 │
-│                                                                             │
-│  2. فرانت‌اند ابتدا Config را از طریق HTTP API ارسال می‌کند:              │
-│     POST /api/config                                                       │
-│     {                                                                      │
-│       "protocol": "UART",                                                  │
-│       "settings": {                                                        │
-│         "baud": 115200,                                                    │
-│         "dataBits": 8,                                                     │
-│         "parity": "none",                                                  │
-│         "stopBits": "1",                                                   │
-│         "port": "uart1",                                                   │
-│         "mode": "terminal"   ← می‌گوید Terminal Mode است                   │
-│       }                                                                    │
-│     }                                                                      │
-│                                                                             │
-│  3. ESP32 Config را دریافت می‌کند و می‌فهمد که Terminal Mode است           │
-│     → WebSocket Server را شروع می‌کند                                      │
-│     → تسک‌های UART را ایجاد می‌کند                                        │
-│                                                                             │
-│  4. فرانت‌اند به WebSocket متصل می‌شود                                     │
-│     ws://192.168.1.17:8080/terminal                                        │
-│                                                                             │
-│  5. ارتباط برقرار است (Full Duplex)                                       │
-│                                                                             │
-│  6. کاربر روی 🔌 Disconnect کلیک می‌کند                                   │
-│                                                                             │
-│  7. فرانت‌اند WebSocket را می‌بندد                                         │
-│                                                                             │
-│  8. ESP32 WebSocket را می‌بندد                                             │
-│     → تسک‌ها متوقف می‌شوند                                                 │
-│     → UART Deinit می‌شود                                                   │
-└─────────────────────────────────────────────────────────────────────────────┘
+```markdown
+# 📚 مستندات کامل پروتکل UART (دوحالته: Bootloader + Terminal)
 
+## 🎯 معرفی
 
+**UART** (Universal Asynchronous Receiver/Transmitter) یکی از پرکاربردترین پروتکل‌های ارتباط سریال است. در L-Programmer، پروتکل UART در دو حالت کار می‌کند:
+
+1. **Bootloader Mode** - برای برنامه‌ریزی فلش میکروکنترلرها (ESP32, STM32)
+2. **Terminal Mode** - برای ارتباط زنده و مانیتورینگ (Serial Monitor)
+
+---
+
+## 🔌 اتصال سخت‌افزاری
+
+### پین‌های ESP32
+
+| GPIO | سیگنال | کاربرد |
+|------|--------|--------|
+| **GPIO17** | TX | ارسال داده به Target |
+| **GPIO16** | RX | دریافت داده از Target |
+| **GPIO5** | RESET | ریست Target (برای Bootloader Mode) |
+| **GND** | GND | زمین مشترک |
+
+### اتصال به Target
+
+```
+ESP32 (L-Programmer)          Target (ESP32/STM32)
+─────────────────────          ─────────────────────
+GPIO17 (TX) ────────────────►  RX
+GPIO16 (RX) ◄────────────────  TX
+GPIO5  (RST) ───────────────►  EN/RESET
+GND        ────────────────►  GND
+```
+
+---
+
+## ⚡ مشخصات
+
+| پارامتر | مقدار |
+|---------|-------|
+| **Baud Rate** | 300 - 921600 (قابل تنظیم) |
+| **Data Bits** | 5, 6, 7, 8 |
+| **Parity** | None, Even, Odd, Mark, Space |
+| **Stop Bits** | 1, 1.5, 2 |
+| **Flow Control** | None, RTS/CTS, XON/XOFF, DTR/DSR |
+| **Buffer** | 2048 بایت (Ring Buffer) |
+| **UART Debug** | UART_NUM_0 (GPIO1 TX, GPIO3 RX) |
+| **UART Target** | UART_NUM_1 (GPIO17 TX, GPIO16 RX) |
+
+---
+
+## 🔄 دو حالت UART
+
+```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         فرانت‌اند (Terminal Page)                          │
+│                           UART Protocol                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│  📌 مرحله ۱: کاربر روی دکمه 🔌 Connect کلیک می‌کند                        │
+│  ┌─────────────────────────────────┐    ┌─────────────────────────────────┐ │
+│  │   حالت ۱: Bootloader Mode      │    │   حالت ۲: Terminal Mode        │ │
+│  │   (پروگرامر)                   │    │   (Live Communication)          │ │
+│  ├─────────────────────────────────┤    ├─────────────────────────────────┤ │
+│  │  • نوشتن/خواندن فلش            │    │  • WebSocket Real-time          │ │
+│  │  • Erase/Verify                │    │  • داده‌های زنده                │ │
+│  │  • تشخیص دستگاه                │    │  • AT Commands                 │ │
+│  │  • از طریق HTTP API            │    │  • از طریق WebSocket            │ │
+│  │  • حالت پیش‌فرض                │    │  • Full Duplex                  │ │
+│  └─────────────────────────────────┘    └─────────────────────────────────┘ │
 │                                                                             │
-│  📌 مرحله ۲: فرانت‌اند Config را از طریق HTTP API ارسال می‌کند            │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  POST /api/config                                                   │   │
-│  │  {                                                                  │   │
-│  │    "protocol": "UART",                                              │   │
-│  │    "settings": {                                                    │   │
-│  │      "baud": 115200,                                                │   │
-│  │      "dataBits": 8,                                                 │   │
-│  │      "parity": "none",                                              │   │
-│  │      "stopBits": "1",                                               │   │
-│  │      "port": "uart1",                                               │   │
-│  │      "mode": "terminal"   ← کلید اصلی!                             │   │
-│  │    }                                                                │   │
-│  │  }                                                                  │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                    │                                        │
-│                                    ▼                                        │
-│  📌 مرحله ۳: ESP32 Config را دریافت می‌کند                                 │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  I (xxxx) UART: ⚙️ UART Config: {"baud":115200,...,"mode":"terminal"} │   │
-│  │  I (xxxx) UART: 🔌 Terminal mode requested                         │   │
-│  │  I (xxxx) UART: 🔌 Starting Terminal WebSocket Server...           │   │
-│  │  I (xxxx) UART: 🌐 Terminal WebSocket: ws://192.168.4.1:8080/terminal │   │
-│  │  I (xxxx) UART: 📡 UART0 → WebSocket task started                  │   │
-│  │  I (xxxx) UART: 📡 UART1 → WebSocket task started                  │   │
-│  │  I (xxxx) UART: ✅ Terminal mode ACTIVE                            │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                    │                                        │
-│                                    ▼                                        │
-│  📌 مرحله ۴: فرانت‌اند پاسخ Config را دریافت می‌کند                       │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  {"status":"configured","protocol":"UART"}                         │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                    │                                        │
-│                                    ▼                                        │
-│  📌 مرحله ۵: فرانت‌اند به WebSocket متصل می‌شود                          │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  ws://192.168.1.17:8080/terminal                                   │   │
-│  │  ✅ WebSocket connected!                                           │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                    │                                        │
-│                                    ▼                                        │
-│  📌 مرحله ۶: ارتباط Full Duplex برقرار است! 🎉                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  📤 کاربر تایپ می‌کند: Hello                                       │   │
-│  │  📥 اکو دریافت می‌کند: Hello                                       │   │
-│  │  📤 کاربر تایپ می‌کند: AT                                          │   │
-│  │  📥 اکو دریافت می‌کند: AT                                          │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                    │                                        │
-│                                    ▼                                        │
-│  📌 مرحله ۷: کاربر روی 🔌 Disconnect کلیک می‌کند                         │
-│                                    │                                        │
-│                                    ▼                                        │
-│  📌 مرحله ۸: WebSocket بسته می‌شود                                        │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  I (xxxx) UART: 🔌 WebSocket CLOSE received!                       │   │
-│  │  I (xxxx) UART: UART deinit for Terminal                           │   │
-│  │  I (xxxx) UART: 📡 UART0 task stopped                              │   │
-│  │  I (xxxx) UART: 📡 UART1 task stopped                              │   │
-│  │  I (xxxx) UART: 🔌 Terminal Mode DEACTIVATED                      │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  📌 مرحله ۹: فرانت‌اند وضعیت را نمایش می‌دهد                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  ⚪ Disconnected                                                    │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
+│  ┌─────────────────────────────────────────────────────────────────────────┐ │
+│  │                    اشتراک‌ها                                            │ │
+│  │  • تنظیمات UART (Baud, Parity, DataBits, StopBits)                    │ │
+│  │  • پین‌های TX/RX (GPIO17/16)                                          │ │
+│  │  • UART Driver ESP-IDF                                                │ │
+│  │  • Ring Buffer (2048 بایت)                                            │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
-
-I (xxxx) UART: ═══ UART Init ═══
-I (xxxx) UART: 📡 Target UART: TX=GPIO17, RX=GPIO16
-I (xxxx) UART: ✅ UART initialized (baud=115200)
----
-
-## 📊 خلاصه تغییرات
-
-| تغییر | توضیح |
-|-------|-------|
-| **`uart_mode_t`** | سه حالت: IDLE, BOOTLOADER, TERMINAL |
-| **`g_uart_mode`** | متغیر نگهدارنده حالت فعلی |
-| **Bootloader Mode** | `uart_connect()` + `uart_detect()` + توابع Read/Write |
-| **Terminal Mode** | WebSocket Handler + داده‌های زنده |
-| **RESET (GPIO5)** | برای ورود به Bootloader |
-| **Echo** | قابلیت اکو در ترمینال |
-| **Timeout** | تایم‌اوت قابل تنظیم از فرانت‌اند |
-| **توابع کمکی** | `uart_is_bootloader_mode()`, `uart_is_terminal_mode()` |
+```
 
 ---
 
-## 🚀 نحوه تست
+## 📋 تنظیمات (Config)
 
-### Bootloader Mode:
+### ساختار JSON
+
+```json
+{
+  "protocol": "UART",
+  "settings": {
+    "baud": 115200,
+    "dataBits": 8,
+    "parity": "none",
+    "stopBits": "1",
+    "flowControl": "none",
+    "rtsPin": -1,
+    "ctsPin": -1,
+    "bufferSize": 2048,
+    "port": "uart1",
+    "mode": "terminal"
+  }
+}
+```
+
+### فیلدها
+
+| فیلد | نوع | پیش‌فرض | توضیح |
+|------|-----|---------|-------|
+| `baud` | uint32 | 115200 | سرعت ارتباط |
+| `dataBits` | uint8 | 8 | تعداد بیت داده (5-8) |
+| `parity` | string | "none" | parity (none/even/odd/mark/space) |
+| `stopBits` | string | "1" | stop bits (1/1.5/2) |
+| `flowControl` | string | "none" | کنترل جریان |
+| `rtsPin` | int | -1 | پین RTS (-1 = غیرفعال) |
+| `ctsPin` | int | -1 | پین CTS (-1 = غیرفعال) |
+| `bufferSize` | uint32 | 2048 | اندازه بافر |
+| `port` | string | "uart1" | uart0 (Debug) یا uart1 (Target) |
+| `mode` | string | "terminal" | terminal یا bootloader |
+
+---
+
+## 🔄 جریان کار (Workflow)
+
+### حالت Bootloader
+
+```
+┌──────────┐     HTTP API      ┌──────────┐     UART      ┌──────────┐
+│ فرانت‌اند │ ────────────────► │  ESP32   │ ────────────► │  Target  │
+│          │  POST /api/config │          │   داده‌های    │  (ESP32/ │
+│          │  POST /api/connect│          │   HEX/BIN    │  STM32)  │
+│          │  POST /api/program│          │              │          │
+│          │  POST /api/read   │          │              │          │
+│          │  POST /api/erase  │          │              │          │
+│          │  POST /api/verify │          │              │          │
+└──────────┘                    └──────────┘              └──────────┘
+```
+
+### حالت Terminal
+
+```
+┌──────────┐    WebSocket       ┌──────────┐     UART      ┌──────────┐
+│ فرانت‌اند │ ◄───────────────► │  ESP32   │ ◄───────────► │  Target  │
+│          │  داده‌های زنده     │          │   داده‌های    │  (ESP32/ │
+│          │  AT Commands       │          │   زنده       │  STM32)  │
+│          │  تنظیمات Config    │          │              │          │
+└──────────┘                    └──────────┘              └──────────┘
+```
+
+---
+
+## 📡 WebSocket Endpoint
+
+### مسیر
+
+```
+ws://IP:8080/terminal       → JSON (کنترل و تنظیمات)
+ws://IP:8080/uart/terminal  → Raw Data (داده خام)
+```
+
+### پیام‌ها
+
+#### ارسال Config:
+
+```json
+{
+  "cmd": "config",
+  "baud": 115200,
+  "dataBits": 8,
+  "parity": "none",
+  "stopBits": "1",
+  "protocol": "uart",
+  "port": "uart1"
+}
+```
+
+#### ارسال داده:
+
+```json
+{
+  "cmd": "send",
+  "data": "AT\r\n"
+}
+```
+
+#### پاسخ Config:
+
+```json
+{
+  "status": "configured",
+  "protocol": "UART"
+}
+```
+
+---
+
+## 🔧 توابع API
+
+### توابع عمومی
+
+| تابع | توضیح |
+|------|--------|
+| `uart_init()` | مقداردهی اولیه UART |
+| `uart_deinit()` | غیرفعال کردن UART |
+| `uart_connect()` | اتصال به Target |
+| `uart_disconnect()` | قطع اتصال |
+| `uart_config(json)` | تنظیم از JSON |
+
+### توابع Bootloader Mode
+
+| تابع | توضیح |
+|------|--------|
+| `uart_detect()` | تشخیص خودکار دستگاه |
+| `uart_read_mem()` | خواندن حافظه |
+| `uart_write_mem()` | نوشتن حافظه |
+| `uart_erase()` | پاک کردن فلش |
+| `uart_verify()` | تأیید نوشتن |
+
+### توابع Terminal Mode
+
+| تابع | توضیح |
+|------|--------|
+| `uart_send_raw()` | ارسال داده خام |
+| `uart_send_data()` | ارسال داده متنی |
+| `uart_config_ws()` | تنظیمات از WebSocket |
+| `uart_terminal_poll()` | پردازش Ring Buffer |
+| `uart_ws_on_open()` | هندلر باز شدن WebSocket |
+| `uart_ws_on_close()` | هندلر بسته شدن WebSocket |
+| `uart_ws_handler()` | هندلر داده WebSocket |
+
+---
+
+## 📊 ساختار فایل protocol_uart.c
+
+```
+protocol_uart.c
+│
+├── بخش ۱: هدرها و تعاریف
+│   ├── #include ها
+│   ├── TAG
+│   ├── پین‌های TX/RX
+│   ├── بافر Ring
+│   └── uart_mode_t (enum)
+│
+├── بخش ۲: متغیرهای سراسری
+│   ├── g_uart_mode
+│   ├── g_config
+│   └── ring_buffer
+│
+├── بخش ۳: توابع کمکی
+│   ├── uart_parity_from_string()
+│   ├── uart_stop_from_string()
+│   └── uart_apply_config()
+│
+├── بخش ۴: Ring Buffer
+│   ├── ring_buffer_init()
+│   ├── ring_buffer_write()
+│   ├── ring_buffer_read()
+│   ├── ring_buffer_available()
+│   └── ring_buffer_reset()
+│
+├── بخش ۵: Bootloader Mode
+│   ├── uart_connect()
+│   ├── uart_detect()
+│   ├── uart_read_mem()
+│   ├── uart_write_mem()
+│   ├── uart_erase()
+│   └── uart_verify()
+│
+├── بخش ۶: Terminal Mode
+│   ├── uart_send_raw()
+│   ├── uart_send_data()
+│   ├── uart_config_ws()
+│   ├── uart_terminal_poll()
+│   └── uart_rx_interrupt()
+│
+├── بخش ۷: WebSocket Handler
+│   ├── uart_ws_on_open()
+│   ├── uart_ws_on_close()
+│   └── uart_ws_handler()
+│
+├── بخش ۸: توابع API اصلی
+│   ├── uart_init()
+│   ├── uart_deinit()
+│   └── uart_config()
+│
+└── بخش ۹: تعریف پروتکل
+    └── g_uart_protocol
+```
+
+---
+
+## 🧪 تست
+
+### تست Terminal Mode
+
 ```bash
-curl -X POST http://192.168.1.17/api/config \
+# 1. اتصال به WebSocket
+wscat -c ws://192.168.4.1:8080/terminal
+
+# 2. ارسال Config
+{"cmd":"config","baud":115200,"dataBits":8,"parity":"none","stopBits":"1"}
+
+# 3. ارسال داده
+{"cmd":"send","data":"AT\r\n"}
+
+# 4. ارسال داده خام (در مسیر /uart/terminal)
+# مستقیماً: AT\r\n
+```
+
+### تست Bootloader Mode
+
+```bash
+# 1. تنظیم Config
+curl -X POST http://192.168.4.1/api/config \
   -H "Content-Type: application/json" \
-  -d '{"protocol":"UART","settings":{"baud":115200,"dataBits":8,"parity":"none","stopBits":"1","port":"uart1"}}'
+  -d '{"protocol":"UART","settings":{"baud":115200,"port":"uart1","mode":"bootloader"}}'
 
-
-  curl -X POST http://192.168.1.17/api/connect \
+# 2. اتصال
+curl -X POST http://192.168.4.1/api/connect \
   -H "Content-Type: application/json" \
   -d '{"device":"ESP32","family":"ESP32","voltage":33}'
 
+# 3. تشخیص
+curl -X POST http://192.168.4.1/api/detect
 
-
-# 1. قطع اتصال
-curl -X POST http://192.168.1.17/api/disconnect -H "Content-Type: application/json" -d '{}'
-
-# 2. حالا در فرانت‌اند روی Connect کلیک کنید
-# WebSocket باید UART را در Terminal Mode قرار دهد
-
+# 4. خواندن
+curl -X POST http://192.168.4.1/api/read \
+  -H "Content-Type: application/json" \
+  -d '{"address":0x0,"size":1024}'
 ```
-
-# 📊 تست Terminal Mode - راهنمای کامل
-
-## 🎯 هدف: تست WebSocket Terminal Mode UART
-
-با توجه به کد کامل `protocol_uart.c` که دو حالت **Bootloader** و **Terminal** دارد، حالا می‌خواهیم حالت Terminal را تست کنیم.
-
----
-
-## 🔧 مراحل تست
-
-### ۱. فلش کردن ESP32
-
-```bash
-cd ~/project/programer/all_programer
-idf.py -p /dev/ttyUSB0 flash monitor
-```
-
-### ۲. اتصال به WiFi ESP32
-
-```
-SSID: L-Programmer
-Password: 12345678
-IP: 192.168.4.1
-```
-
-### ۳. باز کردن صفحه Terminal در مرورگر
-
-```
-http://192.168.4.1/#/terminal
-```
-
----
-
-## 📋 ساختار صفحه Terminal
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  🖥️ ترمینال چندمنظوره                                                     │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  📌 دستگاه: ESP32 (ESP32)                              [📡 انتخاب دستگاه] │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  📡 پروتکل: [UART (TTL/RS232) ▼]                                         │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  🔌 پورت: [UART1 (Target) ▼]  ⚡ Baud: [115200 ▼]                 │   │
-│  │  📊 Data Bits: [8 ▼]  ✅ Parity: [None ▼]  🛑 Stop Bits: [1 ▼]   │   │
-│  │  🔄 Flow Control: [None ▼]                                         │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  [🔌 Connect] [🔌 Disconnect]  [🗑️ Clear] [📜 Auto Scroll: ON] [💾 Save] │
-│  [🔢 HEX Mode] [⏱️ Timestamps] [📝 Local Echo] [📷 Capture]               │
-│  ⚪ Disconnected                                                          │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  ⚡ Quick Commands: [AT] [AT+GMR] [AT+CWMODE=1] [AT+CWLAP] [AT+CIPSTART] │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  🖥️ Terminal Ready.                                                │   │
-│  │  Protocol: UART | Baud: 115200 | 8N1                              │   │
-│  │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━   │   │
-│  │  [اینجا خروجی ترمینال نشان داده می‌شود]                            │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  [📤 Send] [HEX Send] [⏎ NL]                                              │
-│  TX: 0 bytes | RX: 0 bytes | ⏱️ 00:00:00                                 │
-├─────────────────────────────────────────────────────────────────────────────┤
-│  [📁 Send File] [💾 Receive to File] [📜 Script]                         │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🔌 تست اتصال WebSocket
-
-### روش ۱: از طریق صفحه Terminal
-
-1. روی دکمه **🔌 Connect** کلیک کنید
-2. در کنسول مرورگر (F12) لاگ‌های WebSocket را ببینید
-
-### روش ۲: از طریق کنسول مرورگر
-
-```javascript
-// باز کردن کنسول مرورگر (F12) و اجرا:
-const ws = new WebSocket('ws://192.168.4.1:8080/terminal');
-
-ws.onopen = () => {
-    console.log('✅ WebSocket connected');
-    // ارسال تنظیمات
-    ws.send(JSON.stringify({
-        cmd: "config",
-        baud: 115200,
-        dataBits: 8,
-        parity: "none",
-        stopBits: "1",
-        protocol: "uart",
-        port: "uart1"
-    }));
-};
-
-ws.onmessage = (event) => {
-    console.log('📥', event.data);
-};
-
-ws.onclose = () => console.log('🔌 Disconnected');
-ws.onerror = (err) => console.log('❌ Error:', err);
-
-// ارسال داده
-ws.send('AT\r\n');
-```
-
----
-
-## 📤 ارسال داده
-
-### از طریق صفحه Terminal:
-1. در قسمت ورودی تایپ کنید: `AT`
-2. دکمه **📤 Send** را بزنید یا Enter بزنید
-
-### از طریق کنسول:
-```javascript
-ws.send('AT+GMR\r\n');
-ws.send('Hello World!\r\n');
-```
-
-
-
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         جریان کامل داده                                    │
-│                                                                             │
-│  ┌──────────┐    WebSocket    ┌─────────────────────────────────────────┐  │
-│  │ فرانت‌اند │ ◄────────────► │  protocol_websocket.c                  │  │
-│  │          │                 │  ┌───────────────────────────────────┐  │  │
-│  └──────────┘                 │  │  ws_task() - حلقه اصلی           │  │  │
-│                               │  │  while (1) {                     │  │  │
-│                               │  │    mg_mgr_poll()                 │  │  │
-│                               │  │    protocol_poll_all() ← ✅      │  │  │
-│                               │  │  }                              │  │  │
-│                               │  └───────────────────────────────────┘  │  │
-│                               │         │                              │  │
-│                               │         ▼                              │  │
-│                               │  ┌───────────────────────────────────┐  │  │
-│                               │  │  protocol.c                      │  │  │
-│                               │  │  protocol_poll_all() ← ✅ جدید   │  │  │
-│                               │  │  فقط پروتکل‌های Mode=TERMINAL   │  │  │
-│                               │  └───────────────────────────────────┘  │  │
-│                               │         │                              │  │
-│                               │         ▼                              │  │
-│                               │  ┌───────────────────────────────────┐  │  │
-│                               │  │  protocol_uart.c                 │  │  │
-│                               │  │  uart_terminal_poll() ← Ring Buf │  │  │
-│                               │  │  uart_rx_interrupt() ← وقفه      │  │  │
-│                               │  └───────────────────────────────────┘  │  │
-│                               └─────────────────────────────────────────┘  │
-│                                                                             │
-│  📌 main.c: فقط HTTP API + WebSocket شروع                                 │
-│  📌 protocol.c: مدیریت حالت و Polling                                     │
-│  📌 protocol_uart.c: Ring Buffer + Interrupt                              │
-│  📌 protocol_websocket.c: WebSocket Server + Poll                         │
-└─────────────────────────────────────────────────────────────────────────────┘
-
----
-
-## 📥 دریافت داده
-
-داده‌های دریافتی از Target در قسمت ترمینال نمایش داده می‌شود:
-- **سبز** = داده ارسالی (TX)
-- **سفید** = داده دریافتی (RX)
-- **زرد** = پیام‌های سیستم
-- **قرمز** = خطاها
-
----
-
-## 🛠️ تنظیمات مهم
-
-| تنظیم | توضیح |
-|-------|-------|
-| **پورت** | UART1 = Target (دو طرفه) / UART0 = Debug (فقط خواندنی) |
-| **Baud Rate** | سرعت ارتباط (پیش‌فرض 115200) |
-| **Data Bits** | 5-8 بیت (پیش‌فرض 8) |
-| **Parity** | None/Even/Odd/Mark/Space |
-| **Stop Bits** | 1/1.5/2 |
-| **Flow Control** | None/RTS-CTS/XON-XOFF/DTR-DSR |
-| **Local Echo** | نمایش داده‌های ارسالی در ترمینال |
-| **HEX Mode** | نمایش داده‌ها به صورت HEX |
-| **Timestamps** | نمایش زمان هر پیام |
-| **Auto Scroll** | اسکرول خودکار به انتها |
-
----
-
-## ⚡ دستورات سریع (Quick Commands)
-
-دکمه‌های زیر به صورت خودکار برای هر پروتکل نمایش داده می‌شوند:
-
-### UART:
-- `AT` - تست ارتباط
-- `AT+GMR` - اطلاعات دستگاه
-- `AT+CWMODE=1` - تنظیم WiFi Mode
-- `AT+CWLAP` - اسکن WiFi
-- `AT+CIPSTART` - شروع اتصال TCP
 
 ---
 
 ## 🐛 عیب‌یابی
 
-### ۱. WebSocket وصل نمی‌شود
-
-**بررسی:**
-```bash
-# از خط فرمان تست کن
-curl -v http://192.168.4.1:8080/terminal
-```
-
-**پاسخ باید:** `HTTP/1.1 404 Not Found` یا `WebSocket upgrade`
-
-### ۲. لاگ‌های ESP32 را ببینید
-
-```bash
-idf.py -p /dev/ttyUSB0 monitor | grep -i "uart\|websocket"
-```
-
-**لاگ‌های مورد انتظار:**
-```
-I (xxxx) UART: 🌐 Terminal WebSocket: ws://192.168.4.1:8080/terminal
-I (xxxx) UART: 📡 UART0 (Debug) → WebSocket (فقط خواندنی)
-I (xxxx) UART: 📡 UART1 (Target) → WebSocket (دو طرفه)
-I (xxxx) UART: 🔌 WebSocket connected - Terminal Mode ACTIVE
-I (xxxx) UART: ⚙️ UART Config: {"cmd":"config","baud":115200,...}
-I (xxxx) UART: ⚡ UART config: baud=115200, 8N1
-```
-
-### ۳. اگر داده‌ای دریافت نمی‌شود
-
-- بررسی کنید که Target (ESP32/STM32) به درستی وصل شده باشد
-- بررسی کنید که Target روشن باشد
-- بررسی کنید که پین‌های TX/RX درست وصل شده باشند
-- بررسی کنید که Baud Rate با Target هماهنگ باشد
+| مشکل | علت | راه‌حل |
+|------|------|--------|
+| **WebSocket وصل نمی‌شود** | سرور روشن نیست | چک `mg_mgr_poll` |
+| **داده ارسال نمی‌شود** | UART init نشده | چک `uart_initialized` |
+| **داده دریافت نمی‌شود** | RX پین اشتباه | چک GPIO16 |
+| **Baud اشتباه** | Config اعمال نشده | چک `uart_apply_config` |
+| **Buffer پر می‌شود** | بافر کوچک | افزایش `bufferSize` |
+| **خطای `undefined reference`** | توابع پیاده‌سازی نشده | اضافه کردن `uart_send_raw` و ... |
 
 ---
 
-## 🚀 گام بعدی
+## 📚 منابع
 
-پس از تست موفق Terminal Mode، به سراغ **Bootloader Mode** می‌رویم تا قابلیت برنامه‌ریزی از طریق HTTP API را تست کنیم.
-
-
-# 📊 بله! کد فرانت‌اند درست است ✅
-
-## 🎯 توضیح نام‌گذاری در فرانت‌اند
-
-شما درست متوجه شدید! در کد `terminal.js` این خط را داریم:
-
-```html
-<option value="uart1" selected>UART1 (Target)</option>
-<option value="uart0">UART0 (Debug)</option>
-```
+- **ESP-IDF UART Driver** - مستندات رسمی
+- **ESP32 Technical Reference Manual**
+- **STM32 UART Bootloader** - AN3155
 
 ---
 
-## 📋 تطابق نام‌ها
-
-| در فرانت‌اند | در ESP-IDF | روی برد شما | پین‌ها |
-|-------------|------------|-------------|--------|
-| **`uart1`** | `UART_NUM_1` | **TX2 / RX2** | GPIO17 / GPIO16 |
-| **`uart0`** | `UART_NUM_0` | **TX0 / RX0** | GPIO1 / GPIO3 |
-
----
-
-## ⚠️ نکته مهم درباره نام‌گذاری
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            📌 توجه!                                        │
-│                                                                             │
-│  در فرانت‌اند ما از نام `uart1` استفاده کرده‌ایم، اما این به معنی         │
-│  UART1 در ESP-IDF نیست!                                                    │
-│                                                                             │
-│  این فقط یک نام نمایشی (Label) است که در dropdown به کاربر نشان داده       │
-│  می‌شود. مهم این است که مقدار (value) به درستی به بک‌اند ارسال شود.       │
-│                                                                             │
-│  در بک‌اند (protocol_uart.c):                                              │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  if (port) {                                                        │   │
-│  │      g_config.port = (strcmp(port->valuestring, "uart0") == 0) ?  │   │
-│  │                      UART_DEBUG_PORT : UART_TARGET_PORT;           │   │
-│  │  }                                                                 │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│                                                                             │
-│  • اگر `uart0` → از `UART_DEBUG_PORT` (UART_NUM_0) استفاده می‌شود        │
-│  • اگر `uart1` → از `UART_TARGET_PORT` (UART_NUM_1) استفاده می‌شود       │
-│                                                                             │
-│  و `UART_TARGET_PORT` در کد به صورت زیر تعریف شده است:                     │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  #define UART_TARGET_PORT    UART_NUM_1                            │   │
-│  │  #define UART_TARGET_TX      17              // GPIO17 = TX2       │   │
-│  │  #define UART_TARGET_RX      16              // GPIO16 = RX2       │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 📊 جدول کامل تطابق
-
-| در فرانت‌اند (value) | در فرانت‌اند (نمایش) | در بک‌اند | پین‌های واقعی | روی برد |
-|---------------------|---------------------|-----------|--------------|---------|
-| `"uart0"` | "UART0 (Debug)" | `UART_DEBUG_PORT` = `UART_NUM_0` | GPIO1 (TX0) / GPIO3 (RX0) | **TX0 / RX0** |
-| `"uart1"` | "UART1 (Target)" | `UART_TARGET_PORT` = `UART_NUM_1` | GPIO17 (TX2) / GPIO16 (RX2) | **TX2 / RX2** |
-
----
-
-## ✅ پس روی برد شما:
-
-```
-فرانت‌اند: "uart1" (Target)
-    ↓
-بک‌اند: UART_TARGET_PORT = UART_NUM_1
-    ↓
-پین‌ها: GPIO17 (TX) / GPIO16 (RX)
-    ↓
-روی برد: TX2 / RX2  ← ✅ این همان است!
-```
-
----
-
-## 🧪 برای تست روی برد شما:
-
-1. **پورت** را روی **`UART1 (Target)`** بگذارید
-2. این یعنی از **TX2 (GPIO17)** و **RX2 (GPIO16)** استفاده می‌شود
-3. اینها همان پین‌هایی هستند که روی برد برچسب **TX2 / RX2** دارند
-
----
-
-## 📝 خلاصه
-
-| سوال | پاسخ |
-|------|------|
-| **نام درست روی برد چیست؟** | TX2 / RX2 |
-| **در فرانت‌اند چه نامی دارد؟** | `UART1 (Target)` |
-| **مقدار آن چیست؟** | `"uart1"` |
-| **پین‌های آن کدامند؟** | GPIO17 (TX) / GPIO16 (RX) |
-| **آیا این درست است؟** | ✅ بله، کاملاً درست است! |
-
-**پس برای تست از `UART1 (Target)` استفاده کنید که همان TX2/RX2 روی برد شماست!** 🚀
-
-
-# 📊 **رفع خطاهای UART - توابع پیاده‌سازی نشده**
-
-## ❌ خطاها:
-```
-undefined reference to `uart_send_raw'
-undefined reference to `uart_send_data'
-undefined reference to `uart_config_ws'
-undefined reference to `uart_read_register'
-```
-
-## 🔍 علت:
-این توابع در `protocol_websocket.c` صدا زده شده‌اند اما در `protocol_uart.c` پیاده‌سازی نشده‌اند.
-
----
-
-## 🔧 **راه‌حل ۱: اضافه کردن توابع به `protocol_uart.c`**
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                    WebSocket Server (Port 8080) - یکپارچه                  │
-│                         مدیریت همه پروتکل‌ها                              │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│  ws://IP:8080/uart/terminal    → UART Terminal                            │
-│  ws://IP:8080/uart/monitor     → UART Monitor                             │
-│  ws://IP:8080/gpio/read        → GPIO Read                                │
-│  ws://IP:8080/gpio/write       → GPIO Write                               │
-│  ws://IP:8080/swd/debug        → SWD Debug                                │
-│  ws://IP:8080/openocd          → OpenOCD Bridge                           │
-│  ...                                                                        │
-│                                                                             │
-│  ✅ یک WebSocket Server برای همه پروتکل‌ها                                │
-│  ✅ هر پروتکل آدرس اختصاصی دارد                                           │
-│  ✅ بدون تداخل و بدون باز/بسته کردن                                       │
-└─────────────────────────────────────────────────────────────────────────────┘
-```c
-// ============================================================
-//  ✅ توابع UART برای استفاده در WebSocket
-// ============================================================
-
-// ----- ارسال داده خام -----
-void uart_send_raw(const char *data, uint32_t len) {
-    if (!uart_initialized || g_uart_mode != UART_PROTOCOL_MODE_TERMINAL) {
-        ESP_LOGW(TAG, "⚠️ Cannot send raw data - not in terminal mode");
-        return;
-    }
-    uart_write_bytes(UART_TARGET_PORT, data, len);
-    ESP_LOGI(TAG, "📤 Raw sent: %.*s", len, data);
-}
-
-// ----- ارسال داده متنی -----
-void uart_send_data(const char *data) {
-    if (!data) return;
-    if (!uart_initialized || g_uart_mode != UART_PROTOCOL_MODE_TERMINAL) {
-        ESP_LOGW(TAG, "⚠️ Cannot send data - not in terminal mode");
-        return;
-    }
-    uart_write_bytes(UART_TARGET_PORT, data, strlen(data));
-    ESP_LOGI(TAG, "📤 Data sent: %s", data);
-}
-
-// ----- تنظیمات از WebSocket -----
-void uart_config_ws(uint32_t baud, uint8_t data_bits, const char *parity, const char *stop_bits) {
-    ESP_LOGI(TAG, "⚙️ WS Config: baud=%lu, data_bits=%d, parity=%s, stop=%s", 
-             baud, data_bits, parity, stop_bits);
-    
-    g_config.baud_rate = baud;
-    g_config.data_bits = data_bits;
-    g_config.parity = uart_parity_from_string(parity);
-    g_config.stop_bits = uart_stop_from_string(stop_bits);
-    
-    if (uart_initialized) {
-        uart_apply_config();
-    }
-}
-
-// ----- خواندن رجیستر UART -----
-uint32_t uart_read_register(uint32_t addr) {
-    // برای ESP32، خواندن رجیسترهای UART
-    // این یک پیاده‌سازی نمونه است
-    ESP_LOGI(TAG, "📖 Read UART register: 0x%08lX", addr);
-    
-    // اگر آدرس در محدوده UART باشد
-    if (addr >= 0x3FF40000 && addr < 0x3FF50000) {
-        return *((volatile uint32_t*)addr);
-    }
-    return 0x00000000;
-}
-```
-
----
-
-## 🔧 **راه‌حل ۲: اصلاح `protocol_websocket.c` - حذف توابع UART اضافی**
-
-اگر نمی‌خواهید این توابع را پیاده‌سازی کنید، می‌توانید `uart_ws_handler` را ساده‌تر کنید:
-
-```c
-// ----- UART Handler (ساده‌شده) -----
-static void uart_ws_handler(struct mg_connection *c, char *data, uint32_t len) {
-    ESP_LOGI(TAG, "📥 UART: %.*s", len, data);
-    
-    cJSON *json = cJSON_Parse(data);
-    if (!json) {
-        // داده خام - فقط به UART ارسال کن
-        extern void uart_send_raw(const char *data, uint32_t len);
-        uart_send_raw(data, len);
-        return;
-    }
-    
-    cJSON *cmd = cJSON_GetObjectItem(json, "cmd");
-    if (!cmd) {
-        cJSON_Delete(json);
-        return;
-    }
-    
-    if (strcmp(cmd->valuestring, "send") == 0) {
-        cJSON *data_obj = cJSON_GetObjectItem(json, "data");
-        if (data_obj) {
-            extern void uart_send_data(const char *data);
-            uart_send_data(data_obj->valuestring);
-        }
-    }
-    else if (strcmp(cmd->valuestring, "config") == 0) {
-        cJSON *baud = cJSON_GetObjectItem(json, "baud");
-        cJSON *data_bits = cJSON_GetObjectItem(json, "dataBits");
-        cJSON *parity = cJSON_GetObjectItem(json, "parity");
-        cJSON *stop_bits = cJSON_GetObjectItem(json, "stopBits");
-        
-        extern void uart_config_ws(uint32_t baud, uint8_t data_bits, const char *parity, const char *stop_bits);
-        uart_config_ws(
-            baud ? baud->valueint : 115200,
-            data_bits ? data_bits->valueint : 8,
-            parity ? parity->valuestring : "none",
-            stop_bits ? stop_bits->valuestring : "1"
-        );
-        
-        cJSON *resp = cJSON_CreateObject();
-        cJSON_AddStringToObject(resp, "status", "configured");
-        ws_send_json(c, resp);
-    }
-    cJSON_Delete(json);
-}
-```
-
----
-
-## 📝 **کد کامل توابع اضافه شده به `protocol_uart.c`**
-
-```c
-// ============================================================
-//  ✅ توابع UART برای استفاده در WebSocket
-//  (قبل از تعریف g_uart_protocol اضافه کنید)
-// ============================================================
-
-// ----- ارسال داده خام -----
-void uart_send_raw(const char *data, uint32_t len) {
-    if (!uart_initialized || g_uart_mode != UART_PROTOCOL_MODE_TERMINAL) {
-        ESP_LOGW(TAG, "⚠️ Cannot send raw data - not in terminal mode");
-        return;
-    }
-    uart_write_bytes(UART_TARGET_PORT, data, len);
-    ESP_LOGI(TAG, "📤 Raw sent: %.*s", len, data);
-}
-
-// ----- ارسال داده متنی -----
-void uart_send_data(const char *data) {
-    if (!data) return;
-    if (!uart_initialized || g_uart_mode != UART_PROTOCOL_MODE_TERMINAL) {
-        ESP_LOGW(TAG, "⚠️ Cannot send data - not in terminal mode");
-        return;
-    }
-    uart_write_bytes(UART_TARGET_PORT, data, strlen(data));
-    ESP_LOGI(TAG, "📤 Data sent: %s", data);
-}
-
-// ----- تنظیمات از WebSocket -----
-void uart_config_ws(uint32_t baud, uint8_t data_bits, const char *parity, const char *stop_bits) {
-    ESP_LOGI(TAG, "⚙️ WS Config: baud=%lu, data_bits=%d, parity=%s, stop=%s", 
-             baud, data_bits, parity, stop_bits);
-    
-    g_config.baud_rate = baud;
-    g_config.data_bits = data_bits;
-    g_config.parity = uart_parity_from_string(parity);
-    g_config.stop_bits = uart_stop_from_string(stop_bits);
-    
-    if (uart_initialized) {
-        uart_apply_config();
-    }
-}
-
-// ----- خواندن رجیستر UART -----
-uint32_t uart_read_register(uint32_t addr) {
-    ESP_LOGI(TAG, "📖 Read UART register: 0x%08lX", addr);
-    // این یک پیاده‌سازی نمونه است
-    return 0x00000000;
-}
-```
-
----
-
-## 🚀 **حالا کامپایل کنید:**
-
-```bash
-idf.py clean
-idf.py build
+**پایان مستندات UART** ✅
 ```
