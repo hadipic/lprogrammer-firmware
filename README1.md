@@ -8,6 +8,7 @@
 
 [![تصویر 1](pictures/pic1.jpg?raw=true)  
 ](https://github.com/hadipic/xtrsdr/blob/main/pictures/pic1.jpg?raw=true)![تصویر 2](pictures/pic2.jpg?raw=true)
+https://github.com/hadipic/xtrsdr/tree/main
 
 ---
 
