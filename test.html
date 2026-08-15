@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test - ESP32</title>
+</head>
+<body>
+    <h1>WebSocket Test - ESP32</h1>
+    
+    <div style="margin-bottom:10px;padding:10px;background:#f0f0f0;border-radius:6px;">
+        <label>IP: <input id="ipInput" value="192.168.1.17" style="width:150px;padding:5px;border:1px solid #ccc;border-radius:4px;"></label>
+        <button id="configBtn" style="padding:6px 16px;background:#2196F3;color:#fff;border:none;border-radius:4px;cursor:pointer;">⚙️ 1. Send Config (HTTP)</button>
+        <span id="configStatus" style="color:#888;margin-left:10px;">⏳ Not configured</span>
+    </div>
+    
+    <div style="margin-bottom:10px;padding:10px;background:#e8f5e9;border-radius:6px;">
+        <label>WebSocket: <input id="url" value="ws://192.168.1.17:8080/terminal" style="width:350px;padding:5px;border:1px solid #ccc;border-radius:4px;"></label>
+        <button id="connectBtn" style="padding:6px 16px;background:#4CAF50;color:#fff;border:none;border-radius:4px;cursor:pointer;" disabled>🔌 2. Connect</button>
+        <span id="wsStatus" style="color:#888;margin-left:10px;">⏳ Disconnected</span>
+    </div>
+    
+    <div style="margin-bottom:10px;padding:10px;background:#fff3e0;border-radius:6px;">
+        <input id="msg" placeholder="Type message..." disabled style="width:300px;padding:5px;border:1px solid #ccc;border-radius:4px;">
+        <button id="sendBtn" style="padding:6px 16px;background:#FF9800;color:#fff;border:none;border-radius:4px;cursor:pointer;" disabled>📤 3. Send</button>
+    </div>
+    
+    <pre id="log" style="background:#1e1e1e;color:#0f0;padding:10px;height:300px;overflow:auto;border-radius:4px;font-family:monospace;font-size:13px;"></pre>
+    
+    <script>
+        const log = document.getElementById('log');
+        const ipInput = document.getElementById('ipInput');
+        const urlInput = document.getElementById('url');
+        const msg = document.getElementById('msg');
+        const configBtn = document.getElementById('configBtn');
+        const connectBtn = document.getElementById('connectBtn');
+        const sendBtn = document.getElementById('sendBtn');
+        const configStatus = document.getElementById('configStatus');
+        const wsStatus = document.getElementById('wsStatus');
+        
+        let ws = null;
+        let isConfigured = false;
+        
+        function append(text, color='#0f0') {
+            const time = new Date().toLocaleTimeString();
+            log.innerHTML += `<div style="color:${color}">[${time}] ${text}</div>`;
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        // ============================================================
+        //  STEP 1: ارسال Config با HTTP API (با no-cors)
+        // ============================================================
+        async function sendConfig() {
+            const ip = ipInput.value.trim();
+            if (!ip) {
+                append('❌ Please enter IP address!', '#f00');
+                return;
+            }
+            
+            const apiUrl = `http://${ip}/api/config`;
+            
+            const config = {
+                protocol: "UART",
+                settings: {
+                    baud: 115200,
+                    dataBits: 8,
+                    parity: "none",
+                    stopBits: "1",
+                    flowControl: "none",
+                    port: "uart1",
+                    rtsPin: -1,
+                    ctsPin: -1,
+                    bufferSize: 2048,
+                    mode: "terminal"
+                }
+            };
+            
+            append(`📤 Sending config to ${apiUrl} ...`, '#ff0');
+            append(`📤 Body: ${JSON.stringify(config)}`, '#888');
+            
+            try {
+                // ===== با mode: 'no-cors' =====
+                const response = await fetch(apiUrl, {
+                    method: 'POST',
+                    mode: 'no-cors',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                
+                // ===== با no-cors نمی‌توانیم response را بخوانیم =====
+                // اما اگر خطا ندهد، یعنی درخواست ارسال شده است
+                isConfigured = true;
+                configStatus.textContent = '✅ Configured (assumed)';
+                configStatus.style.color = '#4CAF50';
+                append(`✅ Config sent (check ESP32 logs for confirmation)`, '#0f0');
+                
+                urlInput.value = `ws://${ip}:8080/terminal`;
+                connectBtn.disabled = false;
+                
+            } catch (err) {
+                append(`❌ Config error: ${err.message}`, '#f00');
+                append(`⚠️ Trying WebSocket anyway...`, '#ff0');
+                // ===== حتی با خطا، تلاش کن WebSocket وصل شود =====
+                isConfigured = true;
+                connectBtn.disabled = false;
+            }
+        }
+        
+        // ============================================================
+        //  STEP 2: WebSocket Connect
+        // ============================================================
+        function connectWebSocket() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.close();
+                ws = null;
+                connectBtn.textContent = '🔌 2. Connect';
+                wsStatus.textContent = '⏳ Disconnected';
+                wsStatus.style.color = '#888';
+                sendBtn.disabled = true;
+                msg.disabled = true;
+                return;
+            }
+            
+            const wsUrl = urlInput.value.trim();
+            append(`🔌 Connecting WebSocket to ${wsUrl}...`, '#ff0');
+            
+            try {
+                ws = new WebSocket(wsUrl);
+            } catch(e) {
+                append(`❌ ${e.message}`, '#f00');
+                return;
+            }
+            
+            let timeout = setTimeout(() => {
+                if (ws && ws.readyState !== WebSocket.OPEN) {
+                    append('❌ WebSocket connection timeout!', '#f00');
+                    ws.close();
+                    ws = null;
+                }
+            }, 5000);
+            
+            ws.onopen = function() {
+                clearTimeout(timeout);
+                append('✅ WebSocket CONNECTED!', '#0f0');
+                connectBtn.textContent = '🔌 2. Disconnect';
+                wsStatus.textContent = '🟢 Connected';
+                wsStatus.style.color = '#4CAF50';
+                sendBtn.disabled = false;
+                msg.disabled = false;
+                
+                // ===== STEP 3: ارسال Config از طریق WebSocket =====
+                const wsConfig = {
+                    cmd: "config",
+                    mode: "terminal",
+                    protocol: "UART",
+                    baud: 115200,
+                    dataBits: 8,
+                    parity: "none",
+                    stopBits: "1",
+                    flowControl: "none",
+                    port: "uart1",
+                    echo: true
+                };
+                ws.send(JSON.stringify(wsConfig));
+                append(`📤 WS Config: ${JSON.stringify(wsConfig)}`, '#ff0');
+            };
+            
+            ws.onmessage = function(e) {
+                append(`📥 ${e.data}`, '#0ff');
+                
+                try {
+                    const json = JSON.parse(e.data);
+                    if (json.status === 'configured') {
+                        append(`✅ ${json.protocol || 'Protocol'} configured via WS`, '#0f0');
+                        isConfigured = true;
+                    }
+                    if (json.type === 'connected') {
+                        append(`✅ ${json.message} (${json.path})`, '#0f0');
+                    }
+                } catch(err) {}
+            };
+            
+            ws.onerror = function(e) {
+                clearTimeout(timeout);
+                append(`❌ WebSocket error: ${e.type}`, '#f00');
+                console.error('WebSocket error:', e);
+            };
+            
+            ws.onclose = function(e) {
+                clearTimeout(timeout);
+                append(`🔌 WebSocket closed (code: ${e.code})`, '#f80');
+                connectBtn.textContent = '🔌 2. Connect';
+                wsStatus.textContent = '⏳ Disconnected';
+                wsStatus.style.color = '#888';
+                sendBtn.disabled = true;
+                msg.disabled = true;
+                ws = null;
+            };
+        }
+        
+        // ============================================================
+        //  STEP 4: ارسال داده
+        // ============================================================
+        function sendData() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                append('❌ WebSocket not connected!', '#f00');
+                return;
+            }
+            
+            const text = msg.value.trim();
+            if (!text) return;
+            
+            ws.send(JSON.stringify({
+                cmd: "send",
+                protocol: "UART",
+                data: text
+            }));
+            
+            append(`📤 ${text}`, '#ff0');
+            msg.value = '';
+        }
+        
+        // ============================================================
+        //  Event Listeners
+        // ============================================================
+        configBtn.addEventListener('click', sendConfig);
+        connectBtn.addEventListener('click', connectWebSocket);
+        sendBtn.addEventListener('click', sendData);
+        
+        msg.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') sendData();
+        });
+        
+        // ============================================================
+        //  مقداردهی اولیه
+        // ============================================================
+        append('🖥️ Terminal Test Ready', '#0f0');
+        append('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', '#888');
+        append('📌 STEP 1: Click "Send Config (HTTP)"', '#ff0');
+        append('📌 STEP 2: Click "Connect"', '#ff0');
+        append('📌 STEP 3: Type message and click "Send"', '#ff0');
+        append('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', '#888');
+        
+        const savedIP = localStorage.getItem('espIP');
+        if (savedIP) {
+            ipInput.value = savedIP;
+        }
+        
+        ipInput.addEventListener('change', function() {
+            localStorage.setItem('espIP', this.value.trim());
+        });
+        
+        connectBtn.disabled = true;
+    </script>
+</body>
+</html>
