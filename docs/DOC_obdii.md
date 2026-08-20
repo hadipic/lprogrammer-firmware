@@ -451,3 +451,25 @@ void obd_on_data_received(uint8_t *data, int len) {
 | **لاگ** | SPIFFS - ذخیره تمام داده‌ها |
 
 **ESP32 = ELM327 + Web Server + Data Logger + Actuator Tester** 🚀
+
+
+
+## 👥 شبکه‌های اجتماعی و ارتباطی
+
+### 💬 تلگرام
+
+| نوع | نام | لینک |
+|-----|-----|------|
+| گروه | **ESP32 Community** | [t.me/+oi9QrKR1qdozZTc0](https://t.me/+oi9QrKR1qdozZTc0) |
+| گروه | **Embedded & Qt** | [t.me/Embedded_Qt](https://t.me/Embedded_Qt) |
+| کانال | **ESP32 EVM** | [t.me/esp32_evm](https://t.me/esp32_evm) |
+| ربات | **Shop Electronic** | [@shop_electronic_bot](https://t.me/shop_electronic_bot) |
+
+### 🌐 وب‌سایت‌ها
+
+| نوع | نام | لینک |
+|-----|-----|------|
+| فروشگاه | **Shop Electronic** | [shop-electronic.ir](https://shop-electronic.ir) |
+| گیت‌هاب | **hadipic** | [github.com/hadipic](https://github.com/hadipic) |
+
+---
